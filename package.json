@@ -7,7 +7,7 @@
   "scripts": {
     "start": "remotion preview index.tsx",
     "render": "remotion render index.tsx Video out.mp4 --width=3840 --height=1600 --fps=60",
-    "build": "mkdir -p dist && cp index.html dist/ && echo 'Build Successful' || exit 0"
+    "build": "mkdir -p public && cp index.html index.tsx types.ts metadata.json public/ && cp -r components scenes public/ && echo 'Build Successful'"
   },
   "dependencies": {
     "remotion": "^4.0.0",
