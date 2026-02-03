@@ -1,9 +1,8 @@
 
 import { Config } from '@remotion/cli/config';
 
+// 针对浏览器端导出优化
 Config.setVideoImageFormat('jpeg');
-Config.setConcurrency(8);
 Config.setMuted(false);
 
-// 默认导出配置以供 CLI 使用
 export default Config;
