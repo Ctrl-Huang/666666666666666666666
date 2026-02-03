@@ -18,7 +18,7 @@ const RemotionRoot: React.FC = () => {
         durationInFrames={60 * 34} // 34 seconds
         fps={60}
         width={3840}
-        height={1600}
+        height={2160}
       />
     </>
   );

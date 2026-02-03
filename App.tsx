@@ -4,23 +4,23 @@ import { Player, PlayerRef } from '@remotion/player';
 import { Video } from './Video';
 import * as htmlToImage from 'html-to-image';
 import { 
-  Activity, 
   Loader2, 
   CheckCircle2, 
   AlertTriangle, 
-  Zap,
-  Box,
-  Cpu,
   Download,
   Terminal,
-  Play
+  Monitor,
+  FastForward,
+  Cpu
 } from 'lucide-react';
 
 const App: React.FC = () => {
-  const width = 1920; // 离线渲染建议先使用 1080P 以保证性能，导出时可缩放
-  const height = 800;
+  // 物理 4K 规格
+  const width = 3840; 
+  const height = 2160;
   const fps = 60;
-  const durationInFrames = 60 * 34;
+  const totalDuration = 60 * 34;
+  const TEST_FRAME_LIMIT = 20; // 导演要求的 20 帧测试限额
   
   const playerRef = useRef<PlayerRef>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -35,8 +35,7 @@ const App: React.FC = () => {
   const chunksRef = useRef<Blob[]>([]);
 
   /**
-   * 离线帧渲染逻辑
-   * 原理：手动控制播放器 seekTo -> 截图 -> 写入 Canvas -> 捕获 Canvas 帧
+   * 4K 离线帧渲染引擎 (20帧快速测试版)
    */
   const startOfflineRender = useCallback(async () => {
     if (!playerRef.current || !containerRef.current || !canvasRef.current) return;
@@ -47,15 +46,14 @@ const App: React.FC = () => {
     chunksRef.current = [];
     
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
     try {
-        // 1. 初始化录制流
         const stream = canvas.captureStream(fps);
         const recorder = new MediaRecorder(stream, {
             mimeType: 'video/webm;codecs=vp9',
-            videoBitsPerSecond: 50000000 // 50Mbps
+            videoBitsPerSecond: 100000000 // 100Mbps Ultra High Quality
         });
 
         recorder.ondataavailable = (e) => {
@@ -67,84 +65,80 @@ const App: React.FC = () => {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `Kimi_K2.5_Offline_Master.webm`;
+            a.download = `Kimi_K2.5_4K_Test_20Frames.webm`;
             a.click();
             setIsRendering(false);
             setRenderComplete(true);
         };
 
         recorder.start();
-        setStatus("BOOTING_RENDER_ENGINE");
+        setStatus("BOOTING_TEST_ENGINE");
 
-        // 2. 逐帧渲染循环
-        for (let frame = 0; frame < durationInFrames; frame++) {
+        // 核心逻辑：只循环渲染前 20 帧
+        for (let frame = 0; frame < TEST_FRAME_LIMIT; frame++) {
             setCurrentFrame(frame);
-            setStatus(`RENDERING_FRAME_${frame}`);
+            setStatus(`CAPTURING_FRAME_${frame}_OF_${TEST_FRAME_LIMIT}`);
 
-            // 步进到指定帧
             playerRef.current.seekTo(frame);
             
-            // 等待 DOM 更新和资源加载
+            // 4K 像素同步等待
             await new Promise(r => requestAnimationFrame(r));
+            await new Promise(r => setTimeout(r, 32)); // 给予足够的重绘缓冲
             
-            // 将 DOM 转换为图片
             const dataUrl = await htmlToImage.toCanvas(containerRef.current, {
                 width,
                 height,
-                pixelRatio: 1,
-                backgroundColor: '#000'
+                pixelRatio: 1, 
+                backgroundColor: '#000',
+                canvasWidth: width,
+                canvasHeight: height
             });
 
-            // 绘制到隐藏画布
-            ctx.clearRect(0, 0, width, height);
-            ctx.drawImage(dataUrl, 0, 0);
+            ctx.drawImage(dataUrl, 0, 0, width, height);
 
-            // 如果是第一帧，多等一会
             if (frame === 0) await new Promise(r => setTimeout(r, 1000));
         }
 
-        setStatus("FINALIZING_STREAM");
+        setStatus("COMPILING_TEST_STREAM");
         recorder.stop();
 
     } catch (e: any) {
-        setError(`渲染中断: ${e.message}`);
+        setError(`渲染异常: ${e.message}`);
         setIsRendering(false);
     }
-  }, [durationInFrames, fps, width, height]);
+  }, [fps, width, height]);
 
   return (
-    <div className="flex flex-col items-center justify-center w-full min-h-screen bg-[#050505] text-white font-sans p-4 md:p-10">
+    <div className="flex flex-col items-center justify-center w-full min-h-screen bg-[#050505] text-white font-sans p-6 overflow-y-auto">
       
-      {/* 头部装饰 */}
-      <div className="w-full max-w-6xl flex justify-between items-end mb-8">
+      {/* 顶部状态栏 */}
+      <div className="w-full max-w-6xl flex justify-between items-end mb-6">
         <div>
-            <div className="flex items-center gap-3 mb-2">
-                <Box className="w-6 h-6 text-cyan-500" />
-                <span className="text-cyan-500 font-mono text-xs tracking-widest uppercase">Off-grid Mastering</span>
+            <div className="flex items-center gap-3 mb-1">
+                <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                <span className="text-red-500 font-mono text-[10px] tracking-widest uppercase font-bold">4K Test Mode Active</span>
             </div>
-            <h1 className="text-4xl md:text-5xl font-black italic tracking-tighter uppercase">
-                KIMI <span className="text-neutral-500">K2.5</span> STUDIO
+            <h1 className="text-3xl font-black italic tracking-tighter uppercase">
+                KIMI <span className="text-neutral-500 font-normal">PRODUCTION</span> MASTER
             </h1>
         </div>
-        <div className="hidden md:block text-right font-mono text-[10px] text-neutral-600 space-y-1">
-            <p>SYNC_LOCK: ENABLED</p>
-            <p>ASSET_LOADER: READY</p>
-            <p>VERSION: 4.0.OFFLINE</p>
+        <div className="text-right font-mono text-[10px] text-neutral-600 hidden sm:block">
+            <p>SYNC: PIXEL_PERFECT</p>
+            <p>TARGET: 3840x2160</p>
+            <p>LIMIT: 20_FRAMES</p>
         </div>
       </div>
 
-      {/* 渲染主容器 */}
-      <div className="w-full max-w-6xl relative group">
-        
-        {/* 实际渲染区 (隐藏或显示) */}
+      {/* 主视窗 */}
+      <div className="w-full max-w-6xl relative">
         <div 
             ref={containerRef}
-            className="w-full aspect-[2.4/1] bg-black rounded-[32px] overflow-hidden border border-white/10 shadow-2xl relative"
+            className="w-full aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl relative"
         >
           <Player
             ref={playerRef}
             component={Video}
-            durationInFrames={durationInFrames}
+            durationInFrames={totalDuration}
             compositionWidth={width}
             compositionHeight={height}
             fps={fps}
@@ -153,103 +147,91 @@ const App: React.FC = () => {
             autoPlay={false}
           />
 
-          {/* 渲染遮罩层 */}
+          {/* 渲染覆盖层 */}
           {isRendering && (
-            <div className="absolute inset-0 bg-black/80 backdrop-blur-2xl z-50 flex flex-col items-center justify-center">
-                <div className="relative w-64 h-64 mb-10">
-                    <div className="absolute inset-0 border-4 border-cyan-500/20 rounded-full" />
-                    <div 
-                        className="absolute inset-0 border-4 border-cyan-500 rounded-full border-t-transparent animate-spin" 
-                        style={{ animationDuration: '3s' }}
-                    />
+            <div className="absolute inset-0 bg-black/90 backdrop-blur-xl z-50 flex flex-col items-center justify-center">
+                <div className="relative w-48 h-48 mb-8">
+                    <div className="absolute inset-0 border-2 border-red-500/20 rounded-full" />
+                    <div className="absolute inset-0 border-2 border-red-500 rounded-full border-t-transparent animate-spin" />
                     <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-5xl font-black italic italic tracking-tighter">
-                            {Math.floor((currentFrame / durationInFrames) * 100)}%
+                        <span className="text-4xl font-black italic tracking-tighter">
+                            {currentFrame}
                         </span>
-                        <span className="text-[10px] font-mono text-cyan-500 mt-2 uppercase tracking-widest">Mastering</span>
+                        <span className="text-[10px] font-mono text-red-500 uppercase">Frames</span>
                     </div>
                 </div>
-                <div className="flex flex-col items-center gap-2">
-                    <div className="flex items-center gap-3 text-cyan-400 font-mono text-sm tracking-tighter">
-                        <Terminal className="w-4 h-4" />
+                <div className="text-center">
+                    <div className="flex items-center justify-center gap-2 text-red-400 font-mono text-xs mb-1 uppercase tracking-widest">
+                        <Terminal className="w-3 h-3" />
                         <span>{status}</span>
                     </div>
-                    <div className="text-neutral-500 text-[10px] font-mono uppercase tracking-widest">
-                        Frame {currentFrame} of {durationInFrames}
+                    <div className="text-neutral-500 text-[10px] uppercase tracking-[0.3em]">
+                        TEST SPRINT IN PROGRESS
                     </div>
                 </div>
             </div>
           )}
 
-          {/* 完成层 */}
+          {/* 完成反馈 */}
           {renderComplete && (
-             <div className="absolute inset-0 bg-emerald-600 z-[60] flex flex-col items-center justify-center animate-in fade-in duration-500">
-                <CheckCircle2 className="w-24 h-24 mb-6" />
-                <h2 className="text-4xl font-black italic tracking-tighter uppercase mb-8">Export Complete</h2>
+             <div className="absolute inset-0 bg-red-600 z-[60] flex flex-col items-center justify-center animate-in fade-in zoom-in duration-300">
+                <FastForward className="w-16 h-16 mb-4 text-white" />
+                <h2 className="text-2xl font-black italic tracking-tighter uppercase mb-6">Test Render Ready</h2>
                 <button 
                     onClick={() => setRenderComplete(false)}
-                    className="px-8 py-3 bg-white text-emerald-600 rounded-xl font-bold uppercase text-sm hover:scale-105 transition-transform"
+                    className="px-6 py-2 bg-white text-red-600 rounded-lg font-bold uppercase text-xs hover:bg-neutral-100 transition-colors"
                 >
-                    Return to Editor
+                    Dismiss
                 </button>
              </div>
           )}
         </div>
 
-        {/* 隐藏的像素缓冲画布 */}
-        <canvas 
-            ref={canvasRef} 
-            width={width} 
-            height={height} 
-            className="hidden"
-        />
+        {/* 隐藏画板 */}
+        <canvas ref={canvasRef} width={width} height={height} className="hidden" />
 
-        {/* 操作区 */}
-        <div className="mt-8 flex flex-col md:flex-row gap-4 items-center justify-between">
-            <div className="flex items-center gap-6">
-                <div className="flex flex-col">
-                    <span className="text-[10px] text-neutral-500 font-mono uppercase tracking-widest">Resolution</span>
-                    <span className="text-white font-bold italic uppercase">{width}x{height}</span>
-                </div>
-                <div className="w-px h-8 bg-white/10" />
-                <div className="flex flex-col">
-                    <span className="text-[10px] text-neutral-500 font-mono uppercase tracking-widest">Frame Rate</span>
-                    <span className="text-white font-bold italic uppercase">{fps} FPS</span>
+        {/* 交互控制区 */}
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white/5 p-4 rounded-2xl border border-white/5 flex items-center gap-4">
+                <Monitor className="text-cyan-500 w-8 h-8" />
+                <div>
+                    <div className="text-[10px] text-neutral-500 font-mono uppercase">Physical Matrix</div>
+                    <div className="text-sm font-bold uppercase italic">3840 x 2160 (4K)</div>
                 </div>
             </div>
 
-            <button 
-                onClick={startOfflineRender}
-                disabled={isRendering}
-                className={`
-                    flex items-center gap-4 px-12 py-6 rounded-2xl font-black italic uppercase transition-all duration-300
-                    ${isRendering 
-                        ? 'bg-neutral-900 text-neutral-600 cursor-not-allowed' 
-                        : 'bg-white text-black hover:bg-cyan-400 hover:scale-105 shadow-xl hover:shadow-cyan-500/20'}
-                `}
-            >
-                {isRendering ? (
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                ) : (
-                    <Download className="w-6 h-6" />
-                )}
-                <span className="text-2xl tracking-tighter">
-                    {isRendering ? 'Mastering...' : '离线极清渲染'}
-                </span>
-            </button>
+            <div className="md:col-span-2">
+                <button 
+                    onClick={startOfflineRender}
+                    disabled={isRendering}
+                    className={`
+                        w-full h-full flex items-center justify-center gap-4 px-8 py-4 rounded-2xl font-black italic uppercase transition-all
+                        ${isRendering 
+                            ? 'bg-neutral-900 text-neutral-700' 
+                            : 'bg-red-600 text-white hover:bg-red-500 hover:scale-[1.02] shadow-[0_0_30px_rgba(220,38,38,0.3)]'}
+                    `}
+                >
+                    {isRendering ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                        <Cpu className="w-6 h-6" />
+                    )}
+                    <span className="text-xl">
+                        {isRendering ? 'Processing Test...' : '启动 4K 极清渲染 (20帧快速测试)'}
+                    </span>
+                </button>
+            </div>
         </div>
       </div>
 
-      <footer className="mt-20 text-neutral-800 text-[10px] font-mono tracking-[0.4em] uppercase text-center max-w-3xl leading-relaxed">
-        Offline rendering is frame-perfect and guarantees no frame-drops even on lower-end devices. 
-        It uses pixel-sync technology to convert HTML/CSS animations into high-bitrate video.
-      </footer>
+      <p className="mt-8 text-neutral-700 text-[10px] font-mono uppercase tracking-widest text-center">
+        Debug Info: Frame synchronization is locked to 60fps. Offline capture will yield zero-drop master file.
+      </p>
 
-      {/* 错误提示 */}
       {error && (
-        <div className="fixed bottom-10 right-10 bg-red-600 text-white px-8 py-4 rounded-xl shadow-2xl flex items-center gap-4 animate-bounce">
-            <AlertTriangle className="w-6 h-6" />
-            <span className="font-bold text-sm uppercase italic">{error}</span>
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-full flex items-center gap-3 shadow-2xl z-[100]">
+            <AlertTriangle className="w-4 h-4" />
+            <span className="text-xs font-bold uppercase">{error}</span>
         </div>
       )}
     </div>
