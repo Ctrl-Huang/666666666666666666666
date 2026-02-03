@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Player, PlayerRef } from '@remotion/player';
 import { Video } from './Video';
 import { 
@@ -34,17 +34,25 @@ const App: React.FC = () => {
   const chunksRef = useRef<Blob[]>([]);
 
   /**
-   * 生产级递归扫描引擎
+   * 增强型递归画布扫描器
+   * 特别针对 Remotion Player 的 Shadow DOM 结构进行穿透
    */
   const findCanvas = (root: Document | HTMLElement | ShadowRoot): HTMLCanvasElement | null => {
-    const canvas = root.querySelector('canvas');
+    // 1. 直接搜索当前层级
+    const canvas = (root instanceof HTMLElement || root instanceof Document) 
+      ? root.querySelector('canvas') 
+      : (root as any).querySelector?.('canvas');
+      
     if (canvas) return canvas;
-    const all = root.querySelectorAll('*');
-    for (const el of Array.from(all)) {
+
+    // 2. 搜索子元素及其 ShadowRoot
+    const children = root instanceof Document ? Array.from(root.children) : Array.from(root.querySelectorAll('*'));
+    for (const el of children) {
       if (el.shadowRoot) {
         const found = findCanvas(el.shadowRoot);
         if (found) return found;
       }
+      // 特殊处理 IFRAME
       if (el.tagName === 'IFRAME') {
         try {
           const iframeDoc = (el as HTMLIFrameElement).contentDocument || (el as HTMLIFrameElement).contentWindow?.document;
@@ -52,46 +60,61 @@ const App: React.FC = () => {
             const found = findCanvas(iframeDoc);
             if (found) return found;
           }
-        } catch (e) { /* Cross-origin protection */ }
+        } catch (e) { /* 忽略跨域 Iframe */ }
       }
     }
     return null;
   };
 
   const startProRender = useCallback(async () => {
-    if (!playerRef.current) return;
+    if (!playerRef.current || !containerRef.current) return;
     
-    // 1. 初始化与状态重置
+    // 1. 初始化
     setError(null);
-    setStatus("PRE-ROLLING");
+    setStatus("WARMING_UP");
     setIsRendering(true);
     setRenderProgress(0);
     setRenderComplete(false);
     chunksRef.current = [];
 
-    // 2. 预加载：强制跳转并等待
+    // 2. 确保播放器处于初始帧并处于活跃状态
     playerRef.current.pause();
     playerRef.current.seekTo(0);
-    await new Promise(r => setTimeout(r, 1200));
+    
+    // 关键等待：给渲染器一点时间生成初始像素
+    await new Promise(r => setTimeout(r, 2000));
 
-    // 3. 画布捕获
-    const canvas = findCanvas(document.body);
+    // 3. 画布深度搜索
+    let canvas = findCanvas(containerRef.current);
+    
+    // 如果在容器内没找到，尝试全局搜索（最后的尝试）
     if (!canvas) {
-      setError("未检测到渲染画布。请确保页面已完全加载并处于 HTTPS 环境。");
+      canvas = findCanvas(document.body);
+    }
+
+    if (!canvas) {
+      setError("错误：未能捕获到渲染画布。请检查浏览器是否支持 Canvas 录制或尝试刷新页面。");
       setIsRendering(false);
       return;
     }
 
-    // 4. 编码器选择 (VP9 为 4K 首选)
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
-        ? 'video/webm;codecs=vp9' 
+    // 4. 环境安全预检
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        setError("录制功能仅支持 HTTPS 环境（Vercel 默认支持）。");
+        setIsRendering(false);
+        return;
+    }
+
+    // 5. 配置编码器
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') 
+        ? 'video/webm;codecs=vp9,opus' 
         : 'video/webm';
     
     try {
-        const stream = canvas.captureStream(fps);
+        const stream = (canvas as any).captureStream(fps);
         const recorder = new MediaRecorder(stream, {
           mimeType,
-          videoBitsPerSecond: 150000000 // 150Mbps Ultra High Quality
+          videoBitsPerSecond: 100000000 // 100Mbps 兼顾质量与稳定性
         });
 
         recorder.ondataavailable = (e) => {
@@ -99,12 +122,12 @@ const App: React.FC = () => {
         };
 
         recorder.onstop = () => {
-          setStatus("FINALIZING");
+          setStatus("PACKAGING_ASSETS");
           const blob = new Blob(chunksRef.current, { type: 'video/webm' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `Kimi_K2.5_4K_ProRender_${new Date().getTime()}.webm`;
+          a.download = `Kimi_K2.5_Master_${new Date().getTime()}.webm`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
@@ -113,8 +136,8 @@ const App: React.FC = () => {
           setStatus("IDLE");
         };
 
-        // 5. 启动录制流
-        setStatus("MASTERING_4K");
+        // 6. 启动录制流程
+        setStatus("MASTERING_4K_STREAM");
         recorder.start();
         playerRef.current.play();
 
@@ -127,13 +150,14 @@ const App: React.FC = () => {
           if (current >= durationInFrames - 1) {
             clearInterval(monitor);
             playerRef.current.pause();
-            setStatus("PACKAGING");
-            setTimeout(() => recorder.stop(), 1500);
+            setStatus("FLUSHING_BUFFER");
+            // 额外延迟 1 秒确保最后一帧被录制
+            setTimeout(() => recorder.stop(), 1000);
           }
         }, 100);
 
     } catch (e: any) {
-        setError(`渲染引擎报错: ${e.message}`);
+        setError(`渲染引擎初始化失败: ${e.message}`);
         setIsRendering(false);
     }
   }, [durationInFrames, fps]);
@@ -141,7 +165,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col items-center justify-center w-full min-h-screen bg-[#000] text-white p-4 md:p-10 font-sans selection:bg-cyan-500 selection:text-white">
       
-      {/* 顶部专业控制栏 */}
+      {/* 顶部标题栏 */}
       <div className="w-full max-w-7xl flex flex-col md:flex-row justify-between items-start md:items-end mb-10 gap-6">
         <div className="flex items-center gap-6">
             <div className="w-20 h-20 bg-gradient-to-tr from-cyan-600 to-blue-700 rounded-3xl flex items-center justify-center shadow-[0_0_50px_rgba(6,182,212,0.3)]">
@@ -153,27 +177,23 @@ const App: React.FC = () => {
                 </h1>
                 <p className="text-neutral-500 text-xs font-mono tracking-[0.4em] uppercase mt-2 flex items-center gap-2">
                     <Activity className="w-3 h-3 text-emerald-500 animate-pulse" /> 
-                    Local Mastering Environment v3.0
+                    High-End Mastering Node
                 </p>
             </div>
         </div>
 
         <div className="flex flex-wrap gap-3">
             <div className="px-4 py-2 bg-neutral-900/50 border border-white/5 rounded-xl flex items-center gap-2">
-                <Zap className="w-4 h-4 text-yellow-400" />
-                <span className="text-[10px] font-mono text-neutral-400 uppercase tracking-widest">GPU Accel: ON</span>
-            </div>
-            <div className="px-4 py-2 bg-neutral-900/50 border border-white/5 rounded-xl flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-cyan-400" />
-                <span className="text-[10px] font-mono text-neutral-400 uppercase tracking-widest">Vercel SSL: Active</span>
+                <span className="text-[10px] font-mono text-neutral-400 uppercase tracking-widest font-bold">Encrypted SSL</span>
             </div>
         </div>
       </div>
 
-      {/* 主画布预览区 */}
+      {/* 核心播放器区域 */}
       <div 
         ref={containerRef}
-        className="w-full max-w-7xl aspect-[2.4/1] bg-neutral-950 rounded-[60px] overflow-hidden border border-white/10 relative shadow-2xl group"
+        className="w-full max-w-7xl aspect-[2.4/1] bg-neutral-950 rounded-[60px] overflow-hidden border border-white/10 relative shadow-2xl"
       >
         <Player
           ref={playerRef}
@@ -188,7 +208,7 @@ const App: React.FC = () => {
           loop={!isRendering}
         />
 
-        {/* 渲染覆盖层 */}
+        {/* 渲染 UI 层 */}
         {isRendering && (
             <div className="absolute inset-0 bg-black/95 backdrop-blur-xl z-[100] flex flex-col items-center justify-center">
                 <div className="relative">
@@ -221,81 +241,82 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* 成功反馈 */}
+        {/* 成功状态 */}
         {renderComplete && !isRendering && (
             <div className="absolute inset-0 bg-emerald-500 z-[110] flex flex-col items-center justify-center animate-in fade-in zoom-in duration-500">
                 <CheckCircle2 className="w-48 h-48 text-white mb-10 drop-shadow-2xl" />
-                <h2 className="text-7xl font-black italic tracking-tighter mb-4 text-white uppercase">Render Complete</h2>
-                <p className="text-emerald-100 text-xl font-medium mb-12">4K Ultra HD 视频已成功封装并下载</p>
+                <h2 className="text-7xl font-black italic tracking-tighter mb-4 text-white uppercase text-center px-4">Render Successful</h2>
                 <button 
                     onClick={() => setRenderComplete(false)}
                     className="px-16 py-6 bg-white text-emerald-600 rounded-full font-black text-2xl hover:scale-105 transition-transform shadow-xl"
                 >
-                    BACK TO STUDIO
+                    返回控制台
                 </button>
             </div>
         )}
 
-        {/* 错误提示 */}
+        {/* 错误拦截层 */}
         {error && (
-            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-red-600/90 backdrop-blur-md text-white px-10 py-6 rounded-3xl flex items-center gap-6 shadow-2xl z-[120] border border-red-400">
-                <AlertTriangle className="w-10 h-10" />
-                <div className="text-left">
-                    <div className="font-bold text-lg leading-none mb-1">RECORDING_INTERRUPTED</div>
-                    <div className="text-sm opacity-80">{error}</div>
+            <div className="absolute inset-0 bg-red-600/20 backdrop-blur-md z-[120] flex items-center justify-center p-6">
+                <div className="bg-neutral-900 border-2 border-red-500 p-10 rounded-[40px] max-w-2xl shadow-2xl flex flex-col items-center text-center">
+                    <AlertTriangle className="w-20 h-20 text-red-500 mb-6" />
+                    <h3 className="text-3xl font-black italic text-white mb-4 uppercase">Capture Interrupted</h3>
+                    <p className="text-neutral-400 mb-10 leading-relaxed font-medium">{error}</p>
+                    <button 
+                        onClick={() => setError(null)} 
+                        className="w-full py-5 bg-red-600 hover:bg-red-500 text-white rounded-2xl font-black text-xl transition-colors"
+                    >
+                        重试录制
+                    </button>
                 </div>
-                <button onClick={() => setError(null)} className="ml-4 px-4 py-2 bg-white/20 rounded-xl hover:bg-white/40 font-bold">DISMISS</button>
             </div>
         )}
       </div>
 
-      {/* 底部功能区 */}
-      <div className="w-full max-w-7xl mt-12 grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
+      {/* 底部操作区 */}
+      <div className="w-full max-w-7xl mt-12 flex flex-col md:flex-row items-center justify-between gap-10">
         <div className="hidden md:flex flex-col gap-4">
             <div className="flex items-center gap-4 text-neutral-500">
                 <HardDrive className="w-5 h-5" />
-                <span className="text-xs font-mono uppercase tracking-widest">Target: LOCAL_DISK_BUFFER</span>
+                <span className="text-xs font-mono uppercase tracking-widest font-bold text-neutral-400">Disk Status: Ready</span>
             </div>
             <div className="flex items-center gap-4 text-neutral-500">
                 <Cpu className="w-5 h-5" />
-                <span className="text-xs font-mono uppercase tracking-widest">Processing: 3840x1600 @ 60FPS</span>
+                <span className="text-xs font-mono uppercase tracking-widest font-bold text-neutral-400">Mastering: 4K @ 60FPS</span>
             </div>
         </div>
 
-        <div className="flex justify-center">
-            <button 
-                onClick={startProRender}
-                disabled={isRendering}
-                className={`
-                    group relative px-16 py-10 rounded-[40px] transition-all duration-500 active:scale-95 overflow-hidden
-                    ${isRendering 
-                        ? 'bg-neutral-900 text-neutral-700 pointer-events-none' 
-                        : 'bg-white text-black hover:shadow-[0_0_80px_rgba(255,255,255,0.4)]'}
-                `}
-            >
-                <div className="relative z-10 flex items-center gap-6">
-                    {isRendering ? <Loader2 className="w-10 h-10 animate-spin" /> : <PlayCircle className="w-10 h-10" />}
-                    <span className="text-4xl md:text-5xl font-black italic tracking-tighter uppercase">
-                        {isRendering ? 'Mastering...' : '启动 4K 极清录制'}
-                    </span>
-                </div>
-                {!isRendering && (
-                    <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-500 opacity-0 group-hover:opacity-100 transition-opacity duration-500 -z-0" />
-                )}
-            </button>
-        </div>
+        <button 
+            onClick={startProRender}
+            disabled={isRendering}
+            className={`
+                group relative px-16 py-10 rounded-[40px] transition-all duration-500 active:scale-95 overflow-hidden
+                ${isRendering 
+                    ? 'bg-neutral-900 text-neutral-700 pointer-events-none' 
+                    : 'bg-white text-black hover:shadow-[0_0_80px_rgba(255,255,255,0.4)]'}
+            `}
+        >
+            <div className="relative z-10 flex items-center gap-6">
+                {isRendering ? <Loader2 className="w-10 h-10 animate-spin" /> : <PlayCircle className="w-10 h-10" />}
+                <span className="text-4xl md:text-5xl font-black italic tracking-tighter uppercase">
+                    {isRendering ? '录制中...' : '启动 4K 极清录制'}
+                </span>
+            </div>
+            {!isRendering && (
+                <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-500 opacity-0 group-hover:opacity-100 transition-opacity duration-500 -z-0" />
+            )}
+        </button>
 
         <div className="text-right hidden md:block">
-            <div className="text-neutral-600 text-[10px] font-mono uppercase tracking-[0.5em] mb-2">Network Profile</div>
+            <div className="text-neutral-600 text-[10px] font-mono uppercase tracking-[0.5em] mb-2">Mastering Engine</div>
             <div className="text-white font-black italic text-2xl uppercase tracking-tighter">
-                Cloud <span className="text-emerald-400">Deployed</span>
+                Vercel <span className="text-emerald-400">Production</span>
             </div>
-            <div className="text-neutral-500 text-xs mt-1">Ready for HQ Video Synthesis</div>
         </div>
       </div>
       
-      <footer className="mt-16 text-neutral-700 text-[9px] font-mono tracking-[0.6em] uppercase text-center max-w-4xl leading-loose">
-        Warning: High performance rendering detected. Do not close browser or switch tabs during mastering process. Optimized for Chromium-based browsers on Vercel Edge Network.
+      <footer className="mt-16 text-neutral-800 text-[9px] font-mono tracking-[0.6em] uppercase text-center max-w-4xl leading-loose">
+        Optimal Performance: Use Chrome or Edge. Ensure stable power supply during 4K mastering. v3.1-STABLE
       </footer>
     </div>
   );
